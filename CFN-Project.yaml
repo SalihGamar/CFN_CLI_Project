@@ -1,264 +1,285 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'AWS CloudFormation Template for VPC, EC2, ALB, RDS, S3, IAM'
+Description: CFN-CLI - YAML template for deploying VPC with public subnets, IGW, Rout tables, Security groups, S3 Bucket, IAM roles and policies...
+
+Metadata:
+  author: salih 
+  creation_date: '2024-05-28'
 
 Parameters:
-  S3BucketName:
+  vpcCidr:
     Type: String
-    Description: 'The name of the S3 bucket to create'
-  DBUsername:
+    Default: 10.0.0.0/16
+
+  PublicSubnet1Cidr:
     Type: String
-    NoEcho: true
-    Description: 'The database admin account username'
-  DBPassword:
+    Default: 10.0.1.0/24
+
+  PublicSubnet2Cidr:
     Type: String
-    NoEcho: true
-    Description: 'The database admin account password'
+    Default: 10.0.2.0/24
+
+# Machine Image:
+  LatestAmiId:
+    Description: Region specific image from the Parameter Store
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+# EC2 Type:
+  InstanceType:
+    Description: Amazon EC2 instance type for the instances
+    Type: String
+    Default: t2.micro
+
+  MinSize:
+    Type: Number
+    Description: Minimum size for the Auto Scaling Group
+    Default: 2
+
+  MaxSize:
+    Type: Number
+    Description: Maximum size for the Auto Scaling Group
+    Default: 4
+
+  DesiredCapacity:
+    Type: Number
+    Description: Desired capacity for the Auto Scaling Group
+    Default: 2
 
 Resources:
-  # VPC
+# VPC Creation
   VPC:
-    Type: 'AWS::EC2::VPC'
+    Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: '10.0.0.0/16'
+      CidrBlock: !Ref vpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: stack
+          Value: salihproduction
+# Subnets:
+  SubnetPublic1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet1Cidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: stack
+          Value: subproduction
+
+  SubnetPublic2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnet2Cidr
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs ''
+      Tags:
+        - Key: stack
+          Value: subnetprod1
+
+  # Interent Gateway:
+  myInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
       Tags:
         - Key: Name
-          Value: 'MyVPC'
+          Value: igwproduction
 
-  # Subnets
-  PublicSubnet1:
-    Type: 'AWS::EC2::Subnet'
+# AttachGateway:
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: '10.0.1.0/24'
-      MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [0, !GetAZs '']
+      InternetGatewayId: !Ref myInternetGateway
 
-  PublicSubnet2:
-    Type: 'AWS::EC2::Subnet'
+# Route Table:
+  myRouteTable:
+    Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-      CidrBlock: '10.0.2.0/24'
-      MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: rtproduction
 
-  # Internet Gateway
-  InternetGateway:
-    Type: 'AWS::EC2::InternetGateway'
-
-  VPCGatewayAttachment:
-    Type: 'AWS::EC2::VPCGatewayAttachment'
+  myRoute:
+    Type: AWS::EC2::Route
     Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
+      RouteTableId: !Ref myRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref myInternetGateway  
 
-  # Route Table
-  RouteTable:
-    Type: 'AWS::EC2::RouteTable'
+# Subnets Route Tables Association:
+  mySubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      VpcId: !Ref VPC
+      SubnetId: !Ref SubnetPublic1
+      RouteTableId: !Ref myRouteTable
 
-  Route:
-    Type: 'AWS::EC2::Route'
+  mySubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      RouteTableId: !Ref RouteTable
-      DestinationCidrBlock: '0.0.0.0/0'
-      GatewayId: !Ref InternetGateway
+      SubnetId: !Ref SubnetPublic2
+      RouteTableId: !Ref myRouteTable
 
-  SubnetRouteTableAssociation1:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
-    Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref RouteTable
-
-  SubnetRouteTableAssociation2:
-    Type: 'AWS::EC2::SubnetRouteTableAssociation'
-    Properties:
-      SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref RouteTable
-
-  # Security Groups
+# EC2SecurityGroup:
   EC2SecurityGroup:
-    Type: 'AWS::EC2::SecurityGroup'
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: 'Security Group for EC2 instances'
+      GroupDescription: Allow http and ssh to client host
       VpcId: !Ref VPC
       SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-          CidrIp: '0.0.0.0/0'
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: '0.0.0.0/0'
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          FromPort: -1
-          ToPort: -1
-          CidrIp: '0.0.0.0/0'
+          CidrIp: 0.0.0.0/0 # Consider restricting this to a trusted IP range
 
+# ALBSecurityGroup:
   ALBSecurityGroup:
-    Type: 'AWS::EC2::SecurityGroup'
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: 'Security Group for ALB'
+      GroupDescription: Allow http to client host
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: '0.0.0.0/0'
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          FromPort: -1
-          ToPort: -1
-          CidrIp: '0.0.0.0/0'
+          CidrIp: 0.0.0.0/0
 
+# RDSSecurityGroup:
   RDSSecurityGroup:
-    Type: 'AWS::EC2::SecurityGroup'
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: 'Security Group for RDS'
+      GroupDescription: Allow MySQL access
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
-          CidrIp: '0.0.0.0/0'
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          FromPort: -1
-          ToPort: -1
-          CidrIp: '0.0.0.0/0'
+          CidrIp: 0.0.0.0/0 # Consider restricting this to your app's IP range
 
-  # Launch Configuration
+# LaunchConfiguration:
   LaunchConfiguration:
-    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Type: AWS::AutoScaling::LaunchConfiguration
     Properties:
-      ImageId: 'ami-0abcdef1234567890' # Replace with a valid AMI ID
-      InstanceType: 't2.micro'
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
       SecurityGroups:
         - !Ref EC2SecurityGroup
       IamInstanceProfile: !Ref EC2InstanceProfile
+      UserData: !Base64
+        Fn::Sub: |
+          #!/bin/bash
+          yum update -y
+          yum install -y httpd
+          systemctl start httpd
+          systemctl enable httpd
 
-  # Auto Scaling Group
+# AutoScalingGroup:
   AutoScalingGroup:
-    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier:
-        - !Ref PublicSubnet1
-        - !Ref PublicSubnet2
+        - !Ref SubnetPublic1
+        - !Ref SubnetPublic2
       LaunchConfigurationName: !Ref LaunchConfiguration
-      MinSize: '2'
-      MaxSize: '5'
-      DesiredCapacity: '2'
+      MinSize: !Ref MinSize
+      MaxSize: !Ref MaxSize
+      DesiredCapacity: !Ref DesiredCapacity
       TargetGroupARNs:
         - !Ref TargetGroup
 
-  # Target Group
+# TargetGroup:
   TargetGroup:
-    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
-    Properties:
-      Name: 'my-target-group'
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:   
+      HealthCheckIntervalSeconds: 30   
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2 
+      UnhealthyThresholdCount: 2
       Port: 80
       Protocol: HTTP
       VpcId: !Ref VPC
-      HealthCheckProtocol: HTTP
-      HealthCheckPort: '80'
-      HealthCheckPath: '/'
-      Matcher:
-        HttpCode: '200'
-
-  # Load Balancer
-  LoadBalancer:
-    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+# ALB:
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: 'my-alb'
-      Subnets:
-        - !Ref PublicSubnet1
-        - !Ref PublicSubnet2
-      SecurityGroups:
+      Subnets: 
+        - !Ref SubnetPublic1
+        - !Ref SubnetPublic2
+      SecurityGroups: 
         - !Ref ALBSecurityGroup
-      Scheme: 'internet-facing'
 
-  Listener:
-    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+  HTTPlistener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
-        - Type: 'forward'
+        - Type: forward
           TargetGroupArn: !Ref TargetGroup
-      LoadBalancerArn: !Ref LoadBalancer
+      LoadBalancerArn: !Ref ALB
       Port: 80
       Protocol: HTTP
 
-  # S3 Bucket
+# S3Bucket:
   S3Bucket:
-    Type: 'AWS::S3::Bucket'
+    Type: AWS::S3::Bucket
+    Properties:       
+      BucketName: salih-cad-project
+      AccessControl: Private
+  
+# EC2InstanceProfile
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
     Properties:
-      BucketName: !Ref S3BucketName
+      Roles:
+        - !Ref EC2Role
 
-  # IAM Role and Policy
-  IAMRole:
-    Type: 'AWS::IAM::Role'
+# Roles:
+  EC2Role:
+    Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: 'ec2.amazonaws.com'
-            Action: 'sts:AssumeRole'
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      
+      Policies:
+        - PolicyName: S3FullAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:*
+                Resource: '*'
 
-  IAMPolicy:
-    Type: 'AWS::IAM::Policy'
-    Properties:
-      PolicyName: 'S3FullAccessPolicy'
-      Roles:
-        - !Ref IAMRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action: 's3:*'
-            Resource: '*'
-
-  EC2InstanceProfile:
-    Type: 'AWS::IAM::InstanceProfile'
-    Properties:
-      Roles:
-        - !Ref IAMRole
-
-  # RDS Subnet Group
-  DBSubnetGroup:
-    Type: 'AWS::RDS::DBSubnetGroup'
-    Properties:
-      DBSubnetGroupDescription: 'Subnet group for RDS'
-      SubnetIds:
-        - !Ref PublicSubnet1
-        - !Ref PublicSubnet2
-      DBSubnetGroupName: 'my-db-subnet-group'
-
-  # RDS Instance
-  RDSInstance:
-    Type: 'AWS::RDS::DBInstance'
-    Properties:
-      DBInstanceIdentifier: 'my-db-instance'
-      DBInstanceClass: 'db.t2.micro'
-      Engine: 'MySQL'
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Ref DBPassword
-      AllocatedStorage: '20'
-      VPCSecurityGroups:
-        - !Ref RDSSecurityGroup
-      DBSubnetGroupName: !Ref DBSubnetGroup
+# DBSubnetGroup:
+  DBSubnetGroup: 
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupDescription: DB Subnet Grouping
+      SubnetIds: 
+        - !Ref SubnetPublic1
+        - !Ref SubnetPublic2
+      DBSubnetGroupName: salih-db
 
 Outputs:
   VPCId:
-    Description: 'VPC Id'
+    Description: VPC ID
     Value: !Ref VPC
 
-  LoadBalancerDNSName:
-    Description: 'Load Balancer DNS Name'
-    Value: !GetAtt LoadBalancer.DNSName
-
-  S3BucketName:
-    Description: 'S3 Bucket Name'
-    Value: !Ref S3Bucket
+  ALBDNSName:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName
